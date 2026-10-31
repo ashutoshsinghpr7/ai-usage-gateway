@@ -31,6 +31,8 @@ Failed upstream calls are recorded with status `502` and the error string. Reque
 - `GET /metrics` — Prometheus: `gateway_requests_total`, `gateway_prompt_tokens_total`, `gateway_completion_tokens_total`, `gateway_cost_usd_total`, `gateway_latency_ms_sum`
 - `GET /usage` — `{"by_model": [...], "recent": [...]}`
 
+Both `GET` endpoints are **gated by `ADMIN_TOKEN`** when it is set: send `X-Admin-Token: <token>` (or `?token=<token>`). Spend per model is business data — leaving these open on a public domain publishes your numbers to anyone who guesses the path.
+
 ## Deploy
 
 1. New project on Railway → **Deploy from repo** (this repo) — the `Dockerfile` is used, `railway.json` sets the healthcheck and restart policy.
@@ -40,6 +42,7 @@ Failed upstream calls are recorded with status `502` and the error string. Reque
    - `UPSTREAM_BASE_URL` = e.g. `https://api.openai.com/v1`
    - `UPSTREAM_API_KEY` = your provider key (or leave empty for bring-your-own-key)
    - `GATEWAY_API_KEYS` = comma-separated keys your callers must present (leave empty to only meter, not gate)
+   - `ADMIN_TOKEN` = protects `/usage` and `/metrics`; set it on any public domain
    - `MODEL_PRICES` = `{"gpt-4o-mini":{"in":0.15,"out":0.6}}`
 4. Generate a domain, then:
    ```bash

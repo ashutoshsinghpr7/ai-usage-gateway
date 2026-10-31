@@ -43,6 +43,7 @@ LOG = logging.getLogger("metered-gateway")
 UPSTREAM_BASE_URL = os.getenv("UPSTREAM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", "")
 GATEWAY_API_KEYS = [k.strip() for k in os.getenv("GATEWAY_API_KEYS", "").split(",") if k.strip()]
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 REQUEST_TIMEOUT = float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "120"))
 
 # Prices are USD per 1M tokens. Override with MODEL_PRICES as JSON, e.g.
@@ -115,6 +116,19 @@ def authorize(authorization: Optional[str]) -> None:
     raw = (authorization or "").removeprefix("Bearer ").strip()
     if raw not in GATEWAY_API_KEYS:
         raise HTTPException(status_code=401, detail="invalid gateway key")
+
+
+def require_admin(request: Request, token: Optional[str]) -> None:
+    """Gate /usage and /metrics when ADMIN_TOKEN is set.
+
+    Spend per model is business data; on a public domain it should not be world
+    readable. Without ADMIN_TOKEN the endpoints stay open (handy for local dev).
+    """
+    if not ADMIN_TOKEN:
+        return
+    supplied = token or request.headers.get("x-admin-token") or ""
+    if supplied != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="admin token required")
 
 
 def price_for(model: str) -> tuple[float, float]:
@@ -260,7 +274,8 @@ async def proxy(path: str, request: Request, authorization: Optional[str] = Head
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
-def metrics() -> str:
+def metrics(request: Request, token: Optional[str] = None) -> str:
+    require_admin(request, token)
     lines: list[str] = []
     with engine.begin() as conn:
         rows = conn.execute(
@@ -305,7 +320,8 @@ def metrics() -> str:
 
 
 @app.get("/usage")
-def usage(limit: int = 50) -> dict[str, Any]:
+def usage(request: Request, limit: int = 50, token: Optional[str] = None) -> dict[str, Any]:
+    require_admin(request, token)
     with engine.begin() as conn:
         rows = conn.execute(
             select(

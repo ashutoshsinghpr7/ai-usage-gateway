@@ -11,6 +11,7 @@ source .venv/bin/activate
 rm -f verify.db
 export UPSTREAM_BASE_URL=http://127.0.0.1:9911/v1
 export GATEWAY_API_KEYS=testkey
+export ADMIN_TOKEN=admintest
 export MODEL_PRICES='{"fake-model":{"in":0.5,"out":1.5}}'
 export DATABASE_URL=sqlite:///./verify.db
 
@@ -38,24 +39,35 @@ curl -s -o /dev/null -w "status=%{http_code}\n" \
   -H 'Authorization: Bearer wrong' -H 'Content-Type: application/json' \
   -d '{"model":"fake-model","messages":[]}'
 
-echo "--- 3. /metrics ---"
-curl -s http://127.0.0.1:9912/metrics | grep -E 'gateway_(requests_total|prompt_tokens_total|completion_tokens_total|cost_usd_total)'
+echo "--- 3. admin gate: /usage without token (expect 401) ---"
+curl -s -o /dev/null -w "status=%{http_code}\n" http://127.0.0.1:9912/usage
 
-echo "--- 4. /usage ---"
-curl -s http://127.0.0.1:9912/usage
+echo "--- 4. /metrics with admin token ---"
+curl -s -H 'x-admin-token: admintest' http://127.0.0.1:9912/metrics | grep -E 'gateway_(requests_total|prompt_tokens_total|completion_tokens_total|cost_usd_total)'
 
-echo "--- 5. streaming relay ---"
+echo "--- 5. /usage with admin token ---"
+curl -s -H 'x-admin-token: admintest' http://127.0.0.1:9912/usage
+
+echo "--- 6. streaming relay ---"
 curl -s -N -X POST http://127.0.0.1:9912/v1/chat/completions \
   -H 'Authorization: Bearer testkey' -H 'Content-Type: application/json' \
   -d '{"model":"fake-model","stream":true,"messages":[{"role":"user","content":"ping"}]}' \
   | head -4
 
 python3 - <<'PY'
-import json, sqlite3, sys, urllib.request
+import json, sqlite3, sys, urllib.error, urllib.request
 
-usage = json.load(urllib.request.urlopen("http://127.0.0.1:9912/usage"))
+req = urllib.request.Request("http://127.0.0.1:9912/usage", headers={"x-admin-token": "admintest"})
+usage = json.load(urllib.request.urlopen(req))
 model = usage["by_model"][0]
 expected_cost = (120 * 0.5 + 80 * 1.5) / 1_000_000  # 0.00018
+
+def status_of(path, headers=None):
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:9912{path}", headers=headers or {}))
+        return 200
+    except urllib.error.HTTPError as e:
+        return e.code
 
 checks = {
     "both requests metered for the model": model["requests"] == 2,
@@ -64,6 +76,9 @@ checks = {
     "cost computed from MODEL_PRICES": abs(model["cost_usd"] - expected_cost) < 1e-12,
     "rejected key produced no usage row": len(usage["by_model"]) == 1,
     "raw key never stored": "testkey" not in json.dumps(usage["recent"]),
+    "/usage blocked without admin token": status_of("/usage") == 401,
+    "/metrics blocked without admin token": status_of("/metrics") == 401,
+    "/healthz stays open for the healthcheck": status_of("/healthz") == 200,
 }
 rows = sqlite3.connect("verify.db").execute(
     "select model, status, streamed, prompt_tokens, completion_tokens, cost_usd, client_key"
